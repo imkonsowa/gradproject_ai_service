@@ -21,18 +21,31 @@ sio = socketio.Client()
 @sio.on('process_employee_cover')
 def on_message(data):
     image = base64.b64decode(data['snap'])
-    image = np.array(Image.open(io.BytesIO(image)))
+    #file = open('image.png','wb')
+    #file.write(image)
+    #file.close()
+
+    image = Image.open(io.BytesIO(image))
+    #image = cv2.imread('image.png')
+    #image = cv2.cvtColor(image,cv2.COLOR_BGR2RGB)
+    image = np.array(image)
+    cv2.imwrite('2.jpg',image)
     boxes, _ = face_detector.detect(image)
+
     box = boxes[0]
-    face = extract_face(image, box).to(device)
-    features = feature_extractor(face).detach().numpy()
+    print(box)
+    face = extract_face(image, box).unsqueeze(0).to(device)
+
+    features = feature_extractor(face).detach().cpu().numpy()
 
     print(data['id'])
 
     # generate image features
-
+    features = features[0].tolist()
+    print(type(features))
+    print(len(features))
     sio.emit('employee_cover_processed', {
-        'features': [x for x in features[0]],  # todo: alter that list with features one
+        'features': features,  # todo: alter that list with features one
         'id': data['id']
     })
 
@@ -40,12 +53,24 @@ def on_message(data):
 @sio.on('process_snap')
 def on_message(data):
     image = data['snap']
-    vectors = data['vectors']
+    persons = data['vectors']
+
+    vectors = []
+    ids = []
+    names = []
+    for person in persons:
+        vectors.append(person['features'])
+        names.append(person['name'])
+        ids.append([person['id']])
+
     vectors = torch.tensor(vectors).to(device)
     image = base64.b64decode(image)
     # processing the image
 
     image = np.array(Image.open(io.BytesIO(image)))
+    if image.shape[2]>2:
+        image = image[:,:,:3]
+        
     boxes, _ = face_detector.detect(image)
     faces = []
     for box in boxes:
@@ -57,28 +82,32 @@ def on_message(data):
 
     features = feature_extractor(faces).detach()
     matchs = []
+    found_ids = []
     for feature in features:
         cosine_sim = F.cosine_similarity(feature.unsqueeze(0),vectors)
         sim_idx = cosine_sim.argmax().item()
         if cosine_sim[sim_idx]>DISTANCE_THRESHOLD:
             matchs.append(sim_idx)
+            found_ids.append(ids[sim_idx])
         else:
             matchs.append(-1)
 
+    image = np.array(image,np.uint8)
     for i,box in enumerate(boxes):
         cv2.rectangle(image,(int(box[0]),int(box[1])),(int(box[2]),int(box[3])),(255,0,0),2 )
-        cv2.putText(image,str(matchs[i]),(int(box[0]),int(box[1])),cv2.FONT_HERSHEY_SIMPLEX,1,(0,0,255),1,cv2.LINE_AA)
+        cv2.putText(image,str(names[matchs[i]]),(int(box[0]),int(box[1])),cv2.FONT_HERSHEY_SIMPLEX,1,(0,0,255),1,cv2.LINE_AA)
 
 
 
-    encoced_image = base64.a85encode(image)
+    encoced_image = base64.b64encode(image)
 
 
+    print(image.shape)
 
     # todo: emit the image to the client side via socket.io
     sio.emit('employee_found', {
         'snap': encoced_image,  # base64 encoded image,
-        'id': ''  # id of found employee
+        'id': found_ids  # id of found employee
     })
 
 
@@ -87,6 +116,6 @@ def on_message(data):
     print(data)
 
 
-url = 'http://f3d2cb083152.ngrok.io'
+url = 'http://f3348eed8515.ngrok.io'
 sio.connect(url + '?service=ai')
 print("listening to socket.io server: ")
